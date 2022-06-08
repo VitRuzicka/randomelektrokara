@@ -62,6 +62,8 @@ bool USARTLost;
 uint32_t FirePMill;
 uint32_t RearFlamePMill;
 uint8_t RearFlameStarted;
+uint16_t TopWheelSpeed;
+uint8_t  TopRampSpeed;
 
 CRGB leds[16];
 CRGB ledsBack[8];
@@ -106,6 +108,31 @@ void setup()
 
   FastLED.addLeds<WS2812B, LED_PIN_FRONT, GRB>(leds, 16).setCorrection( TypicalLEDStrip );
   FastLED.addLeds<WS2812B, LED_PIN_REAR, GRB>(ledsBack, 8).setCorrection( TypicalLEDStrip );
+
+  if (analogRead(ANALOG_ACCELERATOR) > 1020 && analogRead(ANALOG_BRAKE) > 200) { //hold both brake and acelerator fully down while turning on to enable TerrainMode
+    TopWheelSpeed = 1000;
+    TopRampSpeed = 15;
+
+    fill_solid( leds, 16, CRGB(255,0,0));
+    FastLED.show();
+    delay(100);
+    fill_solid( leds, 16, CRGB(0,0,255));
+    FastLED.show();
+    delay(100);
+    fill_solid( leds, 16, CRGB(255,0,0));
+    FastLED.show();
+    delay(100);
+    fill_solid( leds, 16, CRGB(0,0,255));
+    FastLED.show();
+    delay(100);
+    fill_solid( leds, 16, CRGB(0,100,0));
+    FastLED.show();
+    delay(2000);
+  }
+  else {
+    TopWheelSpeed = 600;
+    TopRampSpeed = 8;
+  }  
   
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(ESC_PIN, OUTPUT);
@@ -140,7 +167,7 @@ void Receive()
     else {  //if there is no data on the SoftwareSerial, update the LEDs, that way, we have the highest framerate without loosing serail data from the ESC
       if (!USARTLost) {
         if (ESCEnabled) {
-          SpeedIndicator(analogRead(ANALOG_ACCELERATOR) > 1022, (Feedback.speedR_meas + Feedback.speedL_meas) >> 1);  //average both wheels
+          SpeedIndicator(analogRead(ANALOG_ACCELERATOR) > 1022, (((-1) * Feedback.speedR_meas) + Feedback.speedL_meas) >> 1);  //average both wheels
           RearLight((KeyPosition() == 0) ? 1 : 0, analogRead(ANALOG_BRAKE) > 50, analogRead(ANALOG_ACCELERATOR) > 1022);
         }
         else FastLED.clear();
@@ -180,15 +207,15 @@ void Receive()
             memcpy(&Feedback, &NewFeedback, sizeof(SerialFeedback));
 
             // Print data to built-in Serial
-            Serial.print("1: ");   Serial.print(Feedback.cmd1);
+            /*Serial.print("1: ");   Serial.print(Feedback.cmd1);
             Serial.print(" 2: ");  Serial.print(Feedback.cmd2);
             Serial.print(" 3: ");  Serial.print(Feedback.speedR_meas);
             Serial.print(" 4: ");  Serial.print(Feedback.speedL_meas);
             Serial.print(" 5: ");  Serial.print(Feedback.batVoltage);
             Serial.print(" 6: ");  Serial.print(Feedback.boardTemp);
-            Serial.print(" 7: ");  Serial.println(Feedback.cmdLed);
+            Serial.print(" 7: ");  Serial.println(Feedback.cmdLed);*/
         } else {
-          Serial.println("Non-valid data skipped");
+          //Serial.println("Non-valid data skipped");
         }
         idx = 0;    // Reset the index (it prevents to enter in this if condition in the next cycle)
     }
@@ -213,11 +240,11 @@ void loop(void) {
     
     if(KeyPosition() == 0) {  //backwards
       int16_t SendSpeed = mapClamp(analogRead(ANALOG_ACCELERATOR), 750, 1023, 0, -500)/* + ((mapClamp(analogRead(ANALOG_BRAKE), 50, 450, 0, -100) * ((Feedback.speedR_meas + Feedback.speedL_meas) >> 1)) / 10)*/;  //the last commented out thing was my attempt at making a brake but we had otherissues so I disabled it
-      Send(0,SpeedGradation(SendSpeed, 1, 8));
+      Send(0,SpeedGradation(SendSpeed, 1, 8, 0));
     }
     else if (KeyPosition() == 2) {  //forwards
-      int16_t SendSpeed = mapClamp(analogRead(ANALOG_ACCELERATOR), 750, 1023, 0, 700)/* - ((mapClamp(analogRead(ANALOG_BRAKE), 50, 450, 0, -100) * ((Feedback.speedR_meas + Feedback.speedL_meas) >> 1)) / 10)*/;
-      Send(0,SpeedGradation(SendSpeed, 1, 8));
+      int16_t SendSpeed = mapClamp(analogRead(ANALOG_ACCELERATOR), 750, 1023, 0, TopWheelSpeed)/* - ((mapClamp(analogRead(ANALOG_BRAKE), 50, 450, 0, -100) * ((Feedback.speedR_meas + Feedback.speedL_meas) >> 1)) / 10)*/;
+      Send(0,SpeedGradation(SendSpeed, 1, TopRampSpeed, 1));
     }
     else {  //pedals disconnected
       Send(0,0);
@@ -276,14 +303,17 @@ uint8_t KeyPosition() {
   return state;
 }
 
-int16_t SpeedGradation(int16_t DesiredSpeed, uint8_t riseSpeed, uint8_t addition) { //addsto a variable which it utputs, if the variable is higher than the target, it gets diminshed
+int16_t SpeedGradation(int16_t DesiredSpeed, uint8_t riseSpeed, uint8_t addition, bool direction) { //adds to a variable which it outputs, if the variable is higher than the target, it gets diminshed
 
   if (millis() - SpeedGradationPMill >= riseSpeed) {
-    SpeedGradationPMill = millis();
-    SpeedGradationValue += addition;
+    SpeedGradationPMill = millis();Serial.print(DesiredSpeed);
+  Serial.print(" , ");
+  Serial.println(SpeedGradationValue);
+    if (direction) SpeedGradationValue += addition;
+    else SpeedGradationValue -= addition;
   }
 
-  if (SpeedGradationValue > DesiredSpeed) SpeedGradationValue = DesiredSpeed;
+  if ((direction && SpeedGradationValue > DesiredSpeed) || (!direction && SpeedGradationValue < DesiredSpeed)) SpeedGradationValue = DesiredSpeed;
   return SpeedGradationValue;
 }
 
@@ -307,7 +337,7 @@ void BatteryIndicator(uint16_t input, bool batteryDischarged) {
 }
 
 void SpeedIndicator (bool flame, int16_t speed) {
-  uint16_t SpeedLong = constrain(map(speed, 0, 500, 0, 1023), 0, 1023);
+  uint16_t SpeedLong = constrain(abs(map(speed, 0, 450, 0, 1023)), 0, 1023);
 
   if (millis() - FirePMill >= 16) { //timing the fire loop
     for (uint8_t i = 0; i < 8; i++) {  //main code is here too, so the fire can reliably overwrite it
